@@ -2,87 +2,288 @@ import os
 import time
 import threading
 import logging
-from flask import Flask
+from flask import Flask, request, jsonify
 from steam.client import SteamClient
 from steam.enums import EPersonaState
 
-# --- Logging ---
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
-# --- Config from environment variables ---
 STEAM_LOGIN    = os.environ.get("STEAM_LOGIN", "")
 STEAM_PASSWORD = os.environ.get("STEAM_PASSWORD", "")
 APP_IDS        = [int(x.strip()) for x in os.environ.get("APP_IDS", "730").split(",")]
 PORT           = int(os.environ.get("PORT", 10000))
 
-# --- Flask keep-alive server ---
 app = Flask(__name__)
+
+state = {
+    "auth_code": None,
+    "waiting_for_code": False,
+    "status": "idle",
+    "logged_in": False,
+    "username": "",
+    "start_time": None,
+}
+
+HTML = """<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Steam Idler</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;700;800&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;min-height:100vh;display:flex;align-items:center;justify-content:center;font-family:'Syne',sans-serif;overflow:hidden;cursor:none}
+canvas{position:fixed;top:0;left:0;z-index:0;pointer-events:none}
+.cursor{position:fixed;width:7px;height:7px;background:#fff;border-radius:50%;pointer-events:none;z-index:9999;transform:translate(-50%,-50%)}
+.cursor-ring{position:fixed;width:26px;height:26px;border:1px solid rgba(255,255,255,0.35);border-radius:50%;pointer-events:none;z-index:9998;transform:translate(-50%,-50%);transition:all .12s ease}
+.scene{position:relative;z-index:1;perspective:900px}
+.card{background:rgba(0,0,0,0.72);border:1px solid rgba(255,255,255,0.11);border-radius:22px;padding:40px 36px;width:340px;text-align:center;backdrop-filter:blur(20px);transform-style:preserve-3d;transition:transform .12s ease;position:relative;overflow:hidden}
+.card::before{content:'';position:absolute;inset:0;border-radius:22px;background:radial-gradient(ellipse at 50% 0%,rgba(255,255,255,0.055) 0%,transparent 65%);pointer-events:none}
+.star-icon{font-size:30px;margin-bottom:14px;display:block;filter:drop-shadow(0 0 10px rgba(255,255,255,0.5))}
+h1{font-size:22px;font-weight:800;color:#fff;letter-spacing:-0.5px;margin-bottom:5px}
+.sub{font-size:10px;color:rgba(255,255,255,0.32);font-family:'Space Mono',monospace;letter-spacing:2px;margin-bottom:24px}
+.pill{display:inline-flex;align-items:center;gap:7px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.09);border-radius:100px;padding:6px 15px;font-family:'Space Mono',monospace;font-size:10px;color:rgba(255,255,255,0.38);margin-bottom:22px}
+.dot{width:6px;height:6px;border-radius:50%;background:rgba(255,255,255,0.22)}
+.dot.active{background:#4ade80;box-shadow:0 0 8px #4ade80;animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+.btn{width:100%;padding:14px;background:#fff;color:#000;border:none;border-radius:12px;font-family:'Syne',sans-serif;font-size:14px;font-weight:700;cursor:none;transition:all .2s;letter-spacing:0.2px}
+.btn:hover{background:rgba(255,255,255,0.88)}
+.btn:active{transform:scale(0.97)}
+.btn-ghost{background:transparent;color:rgba(255,255,255,0.5);border:1px solid rgba(255,255,255,0.1);font-weight:400;margin-top:10px}
+.btn-ghost:hover{background:rgba(255,255,255,0.04);color:rgba(255,255,255,0.7)}
+input[type=text]{width:100%;padding:14px 18px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);border-radius:12px;color:#fff;font-family:'Space Mono',monospace;font-size:20px;text-align:center;letter-spacing:8px;outline:none;transition:border .2s;margin-bottom:14px}
+input[type=text]:focus{border-color:rgba(255,255,255,0.35)}
+input[type=text]::placeholder{letter-spacing:3px;font-size:13px;color:rgba(255,255,255,0.2)}
+.hours-label{font-family:'Space Mono',monospace;font-size:9px;color:rgba(255,255,255,0.25);letter-spacing:2px;text-transform:uppercase;margin-bottom:4px}
+.hours-big{font-size:50px;font-weight:800;color:#fff;line-height:1;letter-spacing:-3px}
+.hours-unit{font-size:10px;color:rgba(255,255,255,0.25);margin-top:3px;font-family:'Space Mono',monospace;letter-spacing:1px}
+.uptime-bar-wrap{margin-top:14px;background:rgba(255,255,255,0.05);border-radius:100px;height:3px;overflow:hidden}
+.uptime-bar{height:100%;background:#4ade80;border-radius:100px;box-shadow:0 0 6px #4ade80;transition:width 1s ease}
+.uptime-lbl{display:flex;justify-content:space-between;margin-top:5px}
+.uptime-lbl span{font-family:'Space Mono',monospace;font-size:8px;color:rgba(255,255,255,0.2);letter-spacing:1px}
+.divider{border:none;border-top:1px solid rgba(255,255,255,0.07);margin:18px 0}
+.stats-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+.stat{background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.07);border-radius:12px;padding:13px 10px;text-align:center}
+.stat-val{font-size:17px;font-weight:800;color:#fff;letter-spacing:-0.5px}
+.stat-lbl{font-family:'Space Mono',monospace;font-size:8px;color:rgba(255,255,255,0.23);letter-spacing:1.5px;text-transform:uppercase;margin-top:3px}
+.user-row{display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:16px}
+.avatar{width:30px;height:30px;border-radius:50%;background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.15);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#fff}
+.username{font-size:13px;font-weight:700;color:#fff}
+.view{display:none}.view.active{display:block}
+.msg{font-family:'Space Mono',monospace;font-size:10px;color:rgba(255,255,255,0.35);margin-top:10px;min-height:14px}
+</style>
+</head>
+<body>
+<div class="cursor" id="cur"></div>
+<div class="cursor-ring" id="ring"></div>
+<canvas id="c"></canvas>
+<div class="scene" id="scene">
+<div class="card" id="card">
+  <span class="star-icon">&#10027;</span>
+  <h1>Steam Idler</h1>
+  <p class="sub">CS2 // HOUR FARMER</p>
+
+  <div id="v-idle" class="view active">
+    <div class="pill"><span class="dot"></span><span>ожидание</span></div>
+    <button class="btn" onclick="goCode()">Войти в аккаунт</button>
+  </div>
+
+  <div id="v-code" class="view">
+    <div class="pill"><span class="dot"></span><span>введи код из письма</span></div>
+    <input type="text" id="ci" maxlength="5" placeholder="· · · · ·" oninput="this.value=this.value.toUpperCase()">
+    <button class="btn" onclick="submitCode()">Подтвердить</button>
+    <button class="btn btn-ghost" onclick="showView('v-idle')">Отмена</button>
+    <div class="msg" id="cmsg"></div>
+  </div>
+
+  <div id="v-online" class="view">
+    <div class="user-row">
+      <div class="avatar" id="av">?</div>
+      <span class="username" id="uname">—</span>
+    </div>
+    <div class="pill"><span class="dot active"></span><span>фарм идёт &middot; offline</span></div>
+    <div class="hours-label">нафармлено этой сессией</div>
+    <div class="hours-big" id="hv">0.00</div>
+    <div class="hours-unit">часов</div>
+    <div class="uptime-bar-wrap"><div class="uptime-bar" id="ubar" style="width:0%"></div></div>
+    <div class="uptime-lbl"><span>сессия</span><span id="utime">0ч 0м</span></div>
+    <hr class="divider">
+    <div class="stats-grid">
+      <div class="stat"><div class="stat-val" id="s-days">0</div><div class="stat-lbl">дней онлайн</div></div>
+      <div class="stat"><div class="stat-val" id="s-total">0.00</div><div class="stat-lbl">часов всего</div></div>
+      <div class="stat"><div class="stat-val">730</div><div class="stat-lbl">app id</div></div>
+      <div class="stat"><div class="stat-val" id="s-rate">1.00</div><div class="stat-lbl">ч/час темп</div></div>
+    </div>
+  </div>
+</div>
+</div>
+
+<script>
+const cur=document.getElementById('cur'),ring=document.getElementById('ring');
+document.addEventListener('mousemove',e=>{cur.style.left=e.clientX+'px';cur.style.top=e.clientY+'px';ring.style.left=e.clientX+'px';ring.style.top=e.clientY+'px'});
+
+const canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
+let W,H,stars=[];
+function resize(){W=canvas.width=window.innerWidth;H=canvas.height=window.innerHeight;initStars()}
+function mkStar(fromTop){return{x:Math.random()*W,y:fromTop?-20:Math.random()*H,size:2.2+Math.random()*3.8,speed:0.5+Math.random()*1.5,op:0.25+Math.random()*0.75,wb:Math.random()*Math.PI*2,ws:0.004+Math.random()*0.008,trail:[]}}
+function initStars(){stars=[];for(let i=0;i<100;i++)stars.push(mkStar(false))}
+function drawStarShape(cx,cy,r){const p=Math.PI;ctx.beginPath();for(let i=0;i<5;i++){const a=i*2*p/5-p/2,ai=(i*2+1)*p/5-p/2;ctx.lineTo(cx+Math.cos(a)*r,cy+Math.sin(a)*r);ctx.lineTo(cx+Math.cos(ai)*r*0.42,cy+Math.sin(ai)*r*0.42)}ctx.closePath()}
+function animate(){ctx.clearRect(0,0,W,H);stars.forEach(s=>{s.wb+=s.ws;s.x+=Math.sin(s.wb)*0.3;s.y+=s.speed;s.trail.push({x:s.x,y:s.y});if(s.trail.length>22)s.trail.shift();s.trail.forEach((pt,i)=>{const r=i/s.trail.length;ctx.save();ctx.globalAlpha=s.op*r*0.3;ctx.fillStyle='#fff';drawStarShape(pt.x,pt.y,s.size*r*0.65);ctx.fill();ctx.restore()});ctx.save();ctx.translate(s.x,s.y);ctx.rotate(s.wb);ctx.globalAlpha=s.op;ctx.fillStyle='#fff';drawStarShape(0,0,s.size);ctx.fill();ctx.restore();if(s.y>H+20)Object.assign(s,mkStar(true))});requestAnimationFrame(animate)}
+resize();window.addEventListener('resize',resize);animate();
+
+const card=document.getElementById('card'),scene=document.getElementById('scene');
+scene.addEventListener('mousemove',e=>{const r=card.getBoundingClientRect(),cx=r.left+r.width/2,cy=r.top+r.height/2;const dx=(e.clientX-cx)/r.width,dy=(e.clientY-cy)/r.height;card.style.transform=`rotateY(${dx*14}deg) rotateX(${-dy*14}deg)`});
+scene.addEventListener('mouseleave',()=>{card.style.transform='rotateY(0) rotateX(0)'});
+
+function showView(id){document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));document.getElementById(id).classList.add('active')}
+function goCode(){fetch('/login',{method:'POST'});showView('v-code')}
+
+async function submitCode(){
+  const c=document.getElementById('ci').value.trim();
+  if(c.length<5){document.getElementById('cmsg').textContent='Нужно 5 символов';return}
+  const r=await fetch('/auth',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:c})});
+  const d=await r.json();
+  document.getElementById('cmsg').textContent=d.message;
+  if(d.ok)setTimeout(poll,1500);
+}
+
+let sessionStart=null,timerInt=null;
+function startTimer(){if(timerInt)clearInterval(timerInt);sessionStart=Date.now();timerInt=setInterval(updateStats,5000);updateStats()}
+function updateStats(){
+  if(!sessionStart)return;
+  const h=(Date.now()-sessionStart)/3600000;
+  document.getElementById('hv').textContent=h.toFixed(2);
+  document.getElementById('s-total').textContent=h.toFixed(2);
+  const tm=Math.floor(h*60),hh=Math.floor(tm/60),mm=tm%60;
+  document.getElementById('utime').textContent=hh+'ч '+mm+'м';
+  document.getElementById('ubar').style.width=Math.min(h/24*100,100)+'%';
+  document.getElementById('s-days').textContent=Math.floor(h/24);
+}
+
+async function poll(){
+  try{
+    const r=await fetch('/status');
+    const d=await r.json();
+    if(d.logged_in){
+      showView('v-online');
+      const n=d.username||'—';
+      document.getElementById('uname').textContent=n;
+      document.getElementById('av').textContent=(n[0]||'?').toUpperCase();
+      if(!sessionStart)startTimer();
+    } else if(d.waiting_for_code){
+      showView('v-code');
+    } else {
+      if(document.querySelector('.view.active')?.id==='v-online'){
+        showView('v-idle');sessionStart=null;if(timerInt)clearInterval(timerInt);
+      }
+    }
+  }catch(e){}
+  setTimeout(poll,3000);
+}
+poll();
+</script>
+</body>
+</html>"""
 
 @app.route("/")
 def index():
-    return "✅ Steam Idler is running!", 200
+    return HTML
+
+@app.route("/status")
+def status():
+    return jsonify({
+        "logged_in": state["logged_in"],
+        "waiting_for_code": state["waiting_for_code"],
+        "status": state["status"],
+        "username": state["username"],
+        "start_time": state["start_time"],
+    })
+
+@app.route("/login", methods=["POST"])
+def login_trigger():
+    state["status"] = "connecting"
+    state["waiting_for_code"] = True
+    return jsonify({"ok": True})
+
+@app.route("/auth", methods=["POST"])
+def auth():
+    data = request.get_json()
+    code = data.get("code", "").strip()
+    if len(code) == 5:
+        state["auth_code"] = code
+        state["waiting_for_code"] = False
+        log.info(f"Auth code received via web: {code}")
+        return jsonify({"ok": True, "message": "✓ Код принят"})
+    return jsonify({"ok": False, "message": "Неверный код"})
 
 @app.route("/health")
 def health():
-    return {"status": "ok", "idling": APP_IDS}, 200
+    return jsonify({"status": "ok", "logged_in": state["logged_in"]})
 
 def run_flask():
     app.run(host="0.0.0.0", port=PORT)
 
-# --- Steam Idler ---
 def run_steam():
     while True:
+        if not state["waiting_for_code"] and state["auth_code"] is None and not state["logged_in"]:
+            log.info("Waiting for login trigger from web UI...")
+            time.sleep(3)
+            continue
+
         client = SteamClient()
 
         @client.on("error")
         def on_error(result):
             log.error(f"Steam error: {result}")
+            state["status"] = f"error {result}"
+            state["logged_in"] = False
 
         @client.on("connected")
         def on_connected():
-            log.info("Connected to Steam CM server")
+            log.info("Connected to Steam CM")
+            state["status"] = "connected"
 
         @client.on("channel_secured")
         def on_secured():
-            log.info("Channel secured, logging in...")
-            client.login(username=STEAM_LOGIN, password=STEAM_PASSWORD)
+            log.info("Waiting for auth code from web UI...")
+            while state["auth_code"] is None:
+                time.sleep(1)
+            log.info("Logging in...")
+            client.login(username=STEAM_LOGIN, password=STEAM_PASSWORD, auth_code=state["auth_code"])
 
         @client.on("logged_on")
         def on_logged_on():
-            log.info(f"Logged in as: {client.user.name}")
-            # Офлайн статус — друзья не видят что мы онлайн,
-            # но часы идут и офлайн-дни не прерываются
+            name = client.user.name if client.user else STEAM_LOGIN
+            log.info(f"Logged in as: {name}")
+            state["logged_in"] = True
+            state["username"] = name
+            state["status"] = "idling"
+            state["start_time"] = time.time()
             client.change_status(persona_state=EPersonaState.Offline)
-            log.info("Status: Offline (invisible to friends)")
-            log.info(f"Starting idle for App IDs: {APP_IDS}")
             client.games_played(APP_IDS)
 
         @client.on("disconnected")
         def on_disconnected():
-            log.warning("Disconnected from Steam. Reconnecting in 30s...")
+            log.warning("Disconnected. Reconnecting in 30s...")
+            state["logged_in"] = False
+            state["status"] = "reconnecting"
 
         try:
             client.connect()
             client.run_forever()
         except Exception as e:
-            log.error(f"Exception in Steam client: {e}")
-        
-        log.info("Restarting Steam session in 30 seconds...")
+            log.error(f"Exception: {e}")
+
+        state["auth_code"] = None
+        log.info("Restarting in 30s...")
         time.sleep(30)
 
-# --- Entry point ---
 if __name__ == "__main__":
     if not STEAM_LOGIN or not STEAM_PASSWORD:
-        log.error("STEAM_LOGIN or STEAM_PASSWORD not set! Check environment variables.")
+        log.error("STEAM_LOGIN or STEAM_PASSWORD not set!")
         exit(1)
-
-    log.info("Starting Flask keep-alive thread...")
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
-
-    log.info("Starting Steam idler...")
     run_steam()
