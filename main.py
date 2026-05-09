@@ -187,9 +187,23 @@ def health():
 def run_flask():
     app.run(host="0.0.0.0", port=PORT)
 
+CM_SERVERS = [
+    ("cm0-ams1.cm.steampowered.com", 27017),
+    ("cm1-ams1.cm.steampowered.com", 27017),
+    ("cm0-fra1.cm.steampowered.com", 27017),
+    ("cm1-fra1.cm.steampowered.com", 27017),
+    ("cm0-lhr1.cm.steampowered.com", 27017),
+    ("cm1-lhr1.cm.steampowered.com", 27017),
+]
+
 def run_steam():
     while True:
         client = SteamClient()
+        try:
+            client.cm_servers.clear()
+            client.cm_servers.merge_list(CM_SERVERS)
+        except Exception:
+            pass
 
         @client.on("error")
         def on_error(result):
