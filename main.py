@@ -18,7 +18,8 @@ app = Flask(__name__)
 
 state = {
     "auth_code": None,
-    "waiting_for_code": False,
+    "code_event": None,
+    "login_triggered": False,
     "status": "idle",
     "logged_in": False,
     "username": "",
@@ -203,18 +204,21 @@ def status():
 
 @app.route("/login", methods=["POST"])
 def login_trigger():
+    state["login_triggered"] = True
     state["status"] = "connecting"
-    state["waiting_for_code"] = True
+    state["logged_in"] = False
     return jsonify({"ok": True})
 
 @app.route("/auth", methods=["POST"])
 def auth():
     data = request.get_json()
     code = data.get("code", "").strip()
-    if len(code) == 5:
+    if len(code) >= 5:
         state["auth_code"] = code
-        state["waiting_for_code"] = False
-        log.info(f"Auth code received via web: {code}")
+        state["status"] = "logging_in"
+        if state["code_event"]:
+            state["code_event"].set()
+        log.info(f"Auth code received: {code}")
         return jsonify({"ok": True, "message": "✓ Код принят"})
     return jsonify({"ok": False, "message": "Неверный код"})
 
@@ -227,17 +231,21 @@ def run_flask():
 
 def run_steam():
     while True:
-        if not state["waiting_for_code"] and state["auth_code"] is None and not state["logged_in"]:
-            log.info("Waiting for login trigger from web UI...")
-            time.sleep(3)
-            continue
+        # Ждём нажатия кнопки на сайте
+        while not state["login_triggered"]:
+            time.sleep(2)
+        state["login_triggered"] = False
+        state["auth_code"] = None
+        state["code_event"] = threading.Event()
+
+        log.info("Starting Steam session...")
 
         client = SteamClient()
 
         @client.on("error")
         def on_error(result):
             log.error(f"Steam error: {result}")
-            state["status"] = f"error {result}"
+            state["status"] = "error"
             state["logged_in"] = False
 
         @client.on("connected")
@@ -247,11 +255,25 @@ def run_steam():
 
         @client.on("channel_secured")
         def on_secured():
-            log.info("Waiting for auth code from web UI...")
-            while state["auth_code"] is None:
-                time.sleep(1)
-            log.info("Logging in...")
-            client.login(username=STEAM_LOGIN, password=STEAM_PASSWORD, auth_code=state["auth_code"])
+            # Первая попытка — без кода, чтобы Steam отправил письмо
+            log.info("Trying login without code to trigger email...")
+            state["status"] = "waiting_code"
+            client.login(username=STEAM_LOGIN, password=STEAM_PASSWORD)
+
+        @client.on("auth_code_required")
+        def on_auth_required(is_2fa, mismatch):
+            log.info(f"Auth code required (2fa={is_2fa}) — waiting for user input...")
+            state["status"] = "waiting_code"
+            # Ждём пока пользователь введёт код на сайте
+            def wait_and_login():
+                state["code_event"].wait()
+                log.info("Got auth code, logging in...")
+                state["status"] = "logging_in"
+                if is_2fa:
+                    client.login(username=STEAM_LOGIN, password=STEAM_PASSWORD, two_factor_code=state["auth_code"])
+                else:
+                    client.login(username=STEAM_LOGIN, password=STEAM_PASSWORD, auth_code=state["auth_code"])
+            threading.Thread(target=wait_and_login, daemon=True).start()
 
         @client.on("logged_on")
         def on_logged_on():
@@ -263,10 +285,11 @@ def run_steam():
             state["start_time"] = time.time()
             client.change_status(persona_state=EPersonaState.Offline)
             client.games_played(APP_IDS)
+            log.info(f"Idling App IDs: {APP_IDS}")
 
         @client.on("disconnected")
         def on_disconnected():
-            log.warning("Disconnected. Reconnecting in 30s...")
+            log.warning("Disconnected from Steam.")
             state["logged_in"] = False
             state["status"] = "reconnecting"
 
@@ -274,9 +297,8 @@ def run_steam():
             client.connect()
             client.run_forever()
         except Exception as e:
-            log.error(f"Exception: {e}")
+            log.error(f"Steam session exception: {e}")
 
-        state["auth_code"] = None
         log.info("Restarting in 30s...")
         time.sleep(30)
 
