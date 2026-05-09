@@ -17,10 +17,7 @@ PORT           = int(os.environ.get("PORT", 10000))
 app = Flask(__name__)
 
 state = {
-    "auth_code": None,
-    "code_event": None,
-    "login_triggered": False,
-    "status": "idle",
+    "status": "connecting",
     "logged_in": False,
     "username": "",
     "start_time": None,
@@ -48,15 +45,8 @@ h1{font-size:22px;font-weight:800;color:#fff;letter-spacing:-0.5px;margin-bottom
 .pill{display:inline-flex;align-items:center;gap:7px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.09);border-radius:100px;padding:6px 15px;font-family:'Space Mono',monospace;font-size:10px;color:rgba(255,255,255,0.38);margin-bottom:22px}
 .dot{width:6px;height:6px;border-radius:50%;background:rgba(255,255,255,0.22)}
 .dot.active{background:#4ade80;box-shadow:0 0 8px #4ade80;animation:pulse 2s infinite}
+.dot.pending{background:#facc15;box-shadow:0 0 8px #facc15;animation:pulse 2s infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
-.btn{width:100%;padding:14px;background:#fff;color:#000;border:none;border-radius:12px;font-family:'Syne',sans-serif;font-size:14px;font-weight:700;cursor:none;transition:all .2s;letter-spacing:0.2px}
-.btn:hover{background:rgba(255,255,255,0.88)}
-.btn:active{transform:scale(0.97)}
-.btn-ghost{background:transparent;color:rgba(255,255,255,0.5);border:1px solid rgba(255,255,255,0.1);font-weight:400;margin-top:10px}
-.btn-ghost:hover{background:rgba(255,255,255,0.04);color:rgba(255,255,255,0.7)}
-input[type=text]{width:100%;padding:14px 18px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);border-radius:12px;color:#fff;font-family:'Space Mono',monospace;font-size:20px;text-align:center;letter-spacing:8px;outline:none;transition:border .2s;margin-bottom:14px}
-input[type=text]:focus{border-color:rgba(255,255,255,0.35)}
-input[type=text]::placeholder{letter-spacing:3px;font-size:13px;color:rgba(255,255,255,0.2)}
 .hours-label{font-family:'Space Mono',monospace;font-size:9px;color:rgba(255,255,255,0.25);letter-spacing:2px;text-transform:uppercase;margin-bottom:4px}
 .hours-big{font-size:50px;font-weight:800;color:#fff;line-height:1;letter-spacing:-3px}
 .hours-unit{font-size:10px;color:rgba(255,255,255,0.25);margin-top:3px;font-family:'Space Mono',monospace;letter-spacing:1px}
@@ -73,7 +63,6 @@ input[type=text]::placeholder{letter-spacing:3px;font-size:13px;color:rgba(255,2
 .avatar{width:30px;height:30px;border-radius:50%;background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.15);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#fff}
 .username{font-size:13px;font-weight:700;color:#fff}
 .view{display:none}.view.active{display:block}
-.msg{font-family:'Space Mono',monospace;font-size:10px;color:rgba(255,255,255,0.35);margin-top:10px;min-height:14px}
 </style>
 </head>
 <body>
@@ -86,17 +75,8 @@ input[type=text]::placeholder{letter-spacing:3px;font-size:13px;color:rgba(255,2
   <h1>Steam Idler</h1>
   <p class="sub">CS2 // HOUR FARMER</p>
 
-  <div id="v-idle" class="view active">
-    <div class="pill"><span class="dot"></span><span>ожидание</span></div>
-    <button class="btn" onclick="goCode()">Войти в аккаунт</button>
-  </div>
-
-  <div id="v-code" class="view">
-    <div class="pill"><span class="dot"></span><span>введи код из письма</span></div>
-    <input type="text" id="ci" maxlength="5" placeholder="· · · · ·" oninput="this.value=this.value.toUpperCase()">
-    <button class="btn" onclick="submitCode()">Подтвердить</button>
-    <button class="btn btn-ghost" onclick="showView('v-idle')">Отмена</button>
-    <div class="msg" id="cmsg"></div>
+  <div id="v-connecting" class="view active">
+    <div class="pill"><span class="dot pending"></span><span id="conn-txt">подключаемся...</span></div>
   </div>
 
   <div id="v-online" class="view">
@@ -113,9 +93,9 @@ input[type=text]::placeholder{letter-spacing:3px;font-size:13px;color:rgba(255,2
     <hr class="divider">
     <div class="stats-grid">
       <div class="stat"><div class="stat-val" id="s-days">0</div><div class="stat-lbl">дней онлайн</div></div>
-      <div class="stat"><div class="stat-val" id="s-total">0.00</div><div class="stat-lbl">часов всего</div></div>
+      <div class="stat"><div class="stat-val" id="s-total">0.00</div><div class="stat-lbl">часов сессии</div></div>
       <div class="stat"><div class="stat-val">730</div><div class="stat-lbl">app id</div></div>
-      <div class="stat"><div class="stat-val" id="s-rate">1.00</div><div class="stat-lbl">ч/час темп</div></div>
+      <div class="stat"><div class="stat-val" id="s-uptime">0</div><div class="stat-lbl">дней работы</div></div>
     </div>
   </div>
 </div>
@@ -131,7 +111,7 @@ function resize(){W=canvas.width=window.innerWidth;H=canvas.height=window.innerH
 function mkStar(fromTop){return{x:Math.random()*W,y:fromTop?-20:Math.random()*H,size:2.2+Math.random()*3.8,speed:0.5+Math.random()*1.5,op:0.25+Math.random()*0.75,wb:Math.random()*Math.PI*2,ws:0.004+Math.random()*0.008,trail:[]}}
 function initStars(){stars=[];for(let i=0;i<100;i++)stars.push(mkStar(false))}
 function drawStarShape(cx,cy,r){const p=Math.PI;ctx.beginPath();for(let i=0;i<5;i++){const a=i*2*p/5-p/2,ai=(i*2+1)*p/5-p/2;ctx.lineTo(cx+Math.cos(a)*r,cy+Math.sin(a)*r);ctx.lineTo(cx+Math.cos(ai)*r*0.42,cy+Math.sin(ai)*r*0.42)}ctx.closePath()}
-function animate(){ctx.clearRect(0,0,W,H);stars.forEach(s=>{s.wb+=s.ws;s.x+=Math.sin(s.wb)*0.3;s.y+=s.speed;s.trail.push({x:s.x,y:s.y});if(s.trail.length>22)s.trail.shift();s.trail.forEach((pt,i)=>{const r=i/s.trail.length;ctx.save();ctx.globalAlpha=s.op*r*0.3;ctx.fillStyle='#fff';drawStarShape(pt.x,pt.y,s.size*r*0.65);ctx.fill();ctx.restore()});ctx.save();ctx.translate(s.x,s.y);ctx.rotate(s.wb);ctx.globalAlpha=s.op;ctx.fillStyle='#fff';drawStarShape(0,0,s.size);ctx.fill();ctx.restore();if(s.y>H+20)Object.assign(s,mkStar(true))});requestAnimationFrame(animate)}
+function animate(){ctx.clearRect(0,0,W,H);stars.forEach(s=>{s.wb+=s.ws;s.x+=Math.sin(s.wb)*0.3;s.y+=s.speed;s.trail.push({x:s.x,y:s.y});if(s.trail.length>22)s.trail.shift();s.trail.forEach((pt,i)=>{const ratio=i/s.trail.length;ctx.save();ctx.globalAlpha=s.op*ratio*0.3;ctx.fillStyle='#fff';drawStarShape(pt.x,pt.y,s.size*ratio*0.65);ctx.fill();ctx.restore()});ctx.save();ctx.translate(s.x,s.y);ctx.rotate(s.wb);ctx.globalAlpha=s.op;ctx.fillStyle='#fff';drawStarShape(0,0,s.size);ctx.fill();ctx.restore();if(s.y>H+20)Object.assign(s,mkStar(true))});requestAnimationFrame(animate)}
 resize();window.addEventListener('resize',resize);animate();
 
 const card=document.getElementById('card'),scene=document.getElementById('scene');
@@ -139,19 +119,14 @@ scene.addEventListener('mousemove',e=>{const r=card.getBoundingClientRect(),cx=r
 scene.addEventListener('mouseleave',()=>{card.style.transform='rotateY(0) rotateX(0)'});
 
 function showView(id){document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));document.getElementById(id).classList.add('active')}
-function goCode(){fetch('/login',{method:'POST'});showView('v-code')}
-
-async function submitCode(){
-  const c=document.getElementById('ci').value.trim();
-  if(c.length<5){document.getElementById('cmsg').textContent='Нужно 5 символов';return}
-  const r=await fetch('/auth',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:c})});
-  const d=await r.json();
-  document.getElementById('cmsg').textContent=d.message;
-  if(d.ok)setTimeout(poll,1500);
-}
 
 let sessionStart=null,timerInt=null;
-function startTimer(){if(timerInt)clearInterval(timerInt);sessionStart=Date.now();timerInt=setInterval(updateStats,5000);updateStats()}
+function startTimer(serverStart){
+  if(timerInt)clearInterval(timerInt);
+  sessionStart=serverStart?new Date(serverStart*1000):new Date();
+  timerInt=setInterval(updateStats,5000);
+  updateStats();
+}
 function updateStats(){
   if(!sessionStart)return;
   const h=(Date.now()-sessionStart)/3600000;
@@ -161,7 +136,10 @@ function updateStats(){
   document.getElementById('utime').textContent=hh+'ч '+mm+'м';
   document.getElementById('ubar').style.width=Math.min(h/24*100,100)+'%';
   document.getElementById('s-days').textContent=Math.floor(h/24);
+  document.getElementById('s-uptime').textContent=Math.floor(h/24);
 }
+
+const statusMap={connecting:'подключаемся...',connected:'соединение...',logging_in:'входим...',idling:'фарм идёт',reconnecting:'переподключение...',error:'ошибка, повтор...'};
 
 async function poll(){
   try{
@@ -172,13 +150,14 @@ async function poll(){
       const n=d.username||'—';
       document.getElementById('uname').textContent=n;
       document.getElementById('av').textContent=(n[0]||'?').toUpperCase();
-      if(!sessionStart)startTimer();
-    } else if(d.waiting_for_code){
-      showView('v-code');
+      if(!sessionStart)startTimer(d.start_time);
     } else {
       if(document.querySelector('.view.active')?.id==='v-online'){
-        showView('v-idle');sessionStart=null;if(timerInt)clearInterval(timerInt);
+        showView('v-connecting');
+        sessionStart=null;
+        if(timerInt)clearInterval(timerInt);
       }
+      document.getElementById('conn-txt').textContent=statusMap[d.status]||d.status;
     }
   }catch(e){}
   setTimeout(poll,3000);
@@ -196,31 +175,10 @@ def index():
 def status():
     return jsonify({
         "logged_in": state["logged_in"],
-        "waiting_for_code": state["waiting_for_code"],
         "status": state["status"],
         "username": state["username"],
         "start_time": state["start_time"],
     })
-
-@app.route("/login", methods=["POST"])
-def login_trigger():
-    state["login_triggered"] = True
-    state["status"] = "connecting"
-    state["logged_in"] = False
-    return jsonify({"ok": True})
-
-@app.route("/auth", methods=["POST"])
-def auth():
-    data = request.get_json()
-    code = data.get("code", "").strip()
-    if len(code) >= 5:
-        state["auth_code"] = code
-        state["status"] = "logging_in"
-        if state["code_event"]:
-            state["code_event"].set()
-        log.info(f"Auth code received: {code}")
-        return jsonify({"ok": True, "message": "✓ Код принят"})
-    return jsonify({"ok": False, "message": "Неверный код"})
 
 @app.route("/health")
 def health():
@@ -231,15 +189,6 @@ def run_flask():
 
 def run_steam():
     while True:
-        # Ждём нажатия кнопки на сайте
-        while not state["login_triggered"]:
-            time.sleep(2)
-        state["login_triggered"] = False
-        state["auth_code"] = None
-        state["code_event"] = threading.Event()
-
-        log.info("Starting Steam session...")
-
         client = SteamClient()
 
         @client.on("error")
@@ -255,25 +204,9 @@ def run_steam():
 
         @client.on("channel_secured")
         def on_secured():
-            # Первая попытка — без кода, чтобы Steam отправил письмо
-            log.info("Trying login without code to trigger email...")
-            state["status"] = "waiting_code"
+            log.info("Logging in...")
+            state["status"] = "logging_in"
             client.login(username=STEAM_LOGIN, password=STEAM_PASSWORD)
-
-        @client.on("auth_code_required")
-        def on_auth_required(is_2fa, mismatch):
-            log.info(f"Auth code required (2fa={is_2fa}) — waiting for user input...")
-            state["status"] = "waiting_code"
-            # Ждём пока пользователь введёт код на сайте
-            def wait_and_login():
-                state["code_event"].wait()
-                log.info("Got auth code, logging in...")
-                state["status"] = "logging_in"
-                if is_2fa:
-                    client.login(username=STEAM_LOGIN, password=STEAM_PASSWORD, two_factor_code=state["auth_code"])
-                else:
-                    client.login(username=STEAM_LOGIN, password=STEAM_PASSWORD, auth_code=state["auth_code"])
-            threading.Thread(target=wait_and_login, daemon=True).start()
 
         @client.on("logged_on")
         def on_logged_on():
@@ -285,11 +218,10 @@ def run_steam():
             state["start_time"] = time.time()
             client.change_status(persona_state=EPersonaState.Offline)
             client.games_played(APP_IDS)
-            log.info(f"Idling App IDs: {APP_IDS}")
 
         @client.on("disconnected")
         def on_disconnected():
-            log.warning("Disconnected from Steam.")
+            log.warning("Disconnected. Reconnecting in 30s...")
             state["logged_in"] = False
             state["status"] = "reconnecting"
 
@@ -297,8 +229,9 @@ def run_steam():
             client.connect()
             client.run_forever()
         except Exception as e:
-            log.error(f"Steam session exception: {e}")
+            log.error(f"Exception: {e}")
 
+        state["logged_in"] = False
         log.info("Restarting in 30s...")
         time.sleep(30)
 
@@ -308,4 +241,4 @@ if __name__ == "__main__":
         exit(1)
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
-    run_steam()
+    run_stscrip
