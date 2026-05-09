@@ -241,4 +241,4 @@ if __name__ == "__main__":
         exit(1)
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
-    run_stscrip
+    run_steam()
